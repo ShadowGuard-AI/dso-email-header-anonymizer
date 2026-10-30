@@ -1,3 +1,5 @@
+![Banner](banner.png)
+
 # dso-email-header-anonymizer
 Removes or replaces identifying information (e.g., X-Mailer, Received headers with IP addresses) from email headers to protect sender/recipient privacy. - Focused on Tools for sanitizing and obfuscating sensitive data within text files and structured data formats
 
