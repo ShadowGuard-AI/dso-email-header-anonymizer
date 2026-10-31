@@ -31,6 +31,17 @@ def anonymize_email_headers(input_file, output_file, keep_x_mailer=False, obfusc
         keep_x_mailer (bool): Whether to keep the X-Mailer header. Defaults to False (remove it).
         obfuscate_received (bool): Whether to obfuscate Received headers instead of removing them. Defaults to False (remove).
     """
+    if os.path.realpath(input_file) == os.path.realpath(output_file) or os.path.abspath(input_file) == os.path.abspath(output_file):
+        logging.error("Error: output file is the same as the input file; refusing to write in place.")
+        return 1
+    # Also compare resolved paths so spellings such as ./file are caught.
+    try:
+        from pathlib import Path
+        if Path(input_file).resolve() == Path(output_file).resolve():
+            logging.error("Error: output file is the same as the input file; refusing to write in place.")
+            return 1
+    except Exception:
+        pass
     try:
         # Detect the encoding of the input file
         with open(input_file, 'rb') as f:
@@ -50,51 +61,86 @@ def anonymize_email_headers(input_file, output_file, keep_x_mailer=False, obfusc
         if header_end_marker not in email_content:
             header_end_marker = '\r\n\r\n'
             if header_end_marker not in email_content:
-                logging.error("Could not determine the header/body separator.")
-                return
+                logging.error("Error: could not determine the header/body separator; no output written.")
+                return 1
 
         header_part, body_part = email_content.split(header_end_marker, 1)
-        headers = header_part.splitlines()
+        raw_headers = header_part.splitlines()
+        # Unfold continuation lines (lines starting with space or tab)
+        # into the header line they continue, before any handling.
+        headers = []
+        for raw_line in raw_headers:
+            if raw_line[:1] in (' ', '\t') and headers:
+                headers[-1] = headers[-1] + ' ' + raw_line.strip()
+            else:
+                headers.append(raw_line)
 
         anonymized_headers = []
         fake = Faker()
+        anonymized_count = 0
 
         for header in headers:
             if header.lower().startswith('received:'):
                 if obfuscate_received:
-                    # Obfuscate Received header
+                    # Obfuscate only host and address tokens in the
+                    # Received header, keeping its structure intact.
+                    header = re.sub(r'[\w.+-]+@[\w.-]+', lambda m: fake.email(), header)
                     ip_address_pattern = r'\b(?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\b'
                     header = re.sub(ip_address_pattern, fake.ipv4(), header)
-                    hostname_pattern = r'\[?([a-zA-Z0-9.-]+)\]?'  # match hostnames and hostnames enclosed in brackets
-                    header = re.sub(hostname_pattern, fake.domain_name(), header)  # replace hostnames with fake domain name
+                    hostname_pattern = r'(?<![\w.-])(?:[a-zA-Z0-9-]+\.)+[a-zA-Z]{2,}(?![\w.-])'
+                    header = re.sub(hostname_pattern, fake.domain_name(), header)
                     anonymized_headers.append(header)
+                    anonymized_count += 1
 
                 else:
                     # Remove Received header
                     logging.debug(f"Removed Received header: {header}")
+                    anonymized_count += 1
                     continue
             elif header.lower().startswith('x-mailer:'):
                 if keep_x_mailer:
                     anonymized_headers.append(header)
                 else:
                     logging.debug(f"Removed X-Mailer header: {header}")
+                    anonymized_count += 1
                     continue
             elif header.lower().startswith('message-id:'):
                 # Replace Message-ID
                 anonymized_headers.append(f"Message-ID: <{fake.uuid4()}@{fake.domain_name()}>")
+                anonymized_count += 1
             elif header.lower().startswith('date:'):
                  #Replace Date header
                 anonymized_headers.append(f"Date: {fake.date_time()}")
+                anonymized_count += 1
             elif header.lower().startswith('from:'):
                 anonymized_headers.append(f"From: {fake.name()} <{fake.email()}>")
+                anonymized_count += 1
             elif header.lower().startswith('to:'):
                 anonymized_headers.append(f"To: {fake.name()} <{fake.email()}>")
+                anonymized_count += 1
+            elif header.lower().startswith('cc:'):
+                anonymized_headers.append(f"Cc: {fake.name()} <{fake.email()}>")
+                anonymized_count += 1
+            elif header.lower().startswith('bcc:'):
+                anonymized_headers.append(f"Bcc: {fake.name()} <{fake.email()}>")
+                anonymized_count += 1
+            elif header.lower().startswith('sender:'):
+                anonymized_headers.append(f"Sender: {fake.name()} <{fake.email()}>")
+                anonymized_count += 1
+            elif header.lower().startswith('x-original-from:'):
+                anonymized_headers.append(f"X-Original-From: {fake.name()} <{fake.email()}>")
+                anonymized_count += 1
             elif header.lower().startswith('reply-to:'):
                 anonymized_headers.append(f"Reply-To: {fake.name()} <{fake.email()}>")
+                anonymized_count += 1
 
 
             else:
                 anonymized_headers.append(header)
+
+        if anonymized_count == 0:
+            logging.error("Error: no headers anonymized; no output written.")
+            return 1
 
         # Join the anonymized headers and add the body
         anonymized_email = '\n'.join(anonymized_headers) + header_end_marker + body_part
@@ -104,11 +150,14 @@ def anonymize_email_headers(input_file, output_file, keep_x_mailer=False, obfusc
             f.write(anonymized_email)
 
         logging.info(f"Anonymized email saved to {output_file}")
+        return 0
 
     except FileNotFoundError:
         logging.error(f"Error: Input file '{input_file}' not found.")
+        return 1
     except Exception as e:
         logging.error(f"An error occurred: {e}")
+        return 1
 
 def main():
     """
@@ -125,7 +174,8 @@ def main():
         logging.error(f"Input file '{args.input_file}' does not exist.")
         sys.exit(1)
     
-    anonymize_email_headers(args.input_file, args.output_file, args.keep_x_mailer, args.obfuscate_received)
+    result = anonymize_email_headers(args.input_file, args.output_file, args.keep_x_mailer, args.obfuscate_received)
+    sys.exit(result if isinstance(result, int) else 0)
 
 if __name__ == "__main__":
     main()
