@@ -78,12 +78,27 @@ def anonymize_email_headers(input_file, output_file, keep_x_mailer=False, obfusc
         anonymized_headers = []
         fake = Faker()
         anonymized_count = 0
+        # The handled list below is the whole coverage, and its edges are
+        # worth stating in one place: any header not named there passes
+        # through byte for byte, including Subject, Return-Path,
+        # Delivered-To, References, and X-Originating-IP, several of which
+        # can carry the very addresses this tool replaces elsewhere. The
+        # body is never looked at either, so a signature block in the body
+        # keeps its names, addresses, and phone numbers through a
+        # successful run.
 
         for header in headers:
             if header.lower().startswith('received:'):
                 if obfuscate_received:
-                    # Obfuscate only host and address tokens in the
-                    # Received header, keeping its structure intact.
+                    # Two shapes hide in these three substitutions. The
+                    # email pass uses a callable, so each address gets its
+                    # own fake; the IP and hostname passes take a plain
+                    # string drawn once, so every IP in the header becomes
+                    # the same fake IP and every hostname the same fake
+                    # domain, which invents a sameness the original did
+                    # not have. And because the hostname pass runs last,
+                    # it also re-matches the domain inside the fake emails
+                    # the first pass just wrote, and replaces that too.
                     header = re.sub(r'[\w.+-]+@[\w.-]+', lambda m: fake.email(), header)
                     ip_address_pattern = r'\b(?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\b'
                     header = re.sub(ip_address_pattern, fake.ipv4(), header)
@@ -113,6 +128,14 @@ def anonymize_email_headers(input_file, output_file, keep_x_mailer=False, obfusc
                 anonymized_headers.append(f"Date: {fake.date_time()}")
                 anonymized_count += 1
             elif header.lower().startswith('from:'):
+                # Every address header below is rebuilt as exactly one
+                # fake name and address, whatever the original held: a To
+                # header naming five recipients becomes one invented
+                # person, so the recipient count and any group structure
+                # are lost, not just the identities. The Date replacement
+                # above has its own cost: the fake datetime is printed in
+                # Python's default shape, not the RFC date format a mail
+                # reader expects in that header.
                 anonymized_headers.append(f"From: {fake.name()} <{fake.email()}>")
                 anonymized_count += 1
             elif header.lower().startswith('to:'):
